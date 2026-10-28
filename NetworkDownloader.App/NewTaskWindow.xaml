@@ -1,0 +1,41 @@
+<Window x:Class="NetworkDownloader.App.NewTaskWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="新建下载" Width="660" Height="480" MinWidth="580" MinHeight="470" ResizeMode="CanResize"
+        WindowStartupLocation="CenterOwner" Background="#F5F7FB" Foreground="{StaticResource Ink}"
+        FontFamily="Microsoft YaHei UI" FontSize="12" UseLayoutRounding="True">
+    <Window.Resources>
+        <Style x:Key="Label" TargetType="TextBlock"><Setter Property="Margin" Value="0,0,0,7" /><Setter Property="Foreground" Value="#42516A" /></Style>
+    </Window.Resources>
+    <Grid Background="#F5F7FB" Margin="22">
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+        <StackPanel Margin="0,0,0,18"><TextBlock Text="新建下载任务" FontSize="19" FontWeight="SemiBold" /><TextBlock Text="支持 HTTP / HTTPS、磁力链接、裸 Hash 和本地种子" Foreground="{StaticResource Muted}" Margin="0,6,0,0" /></StackPanel>
+        <Border Grid.Row="1" Background="White" BorderBrush="{StaticResource Outline}" BorderThickness="1" CornerRadius="10" Padding="18">
+            <StackPanel>
+                <TextBlock Text="下载地址 / 磁力链接 / Hash" Style="{StaticResource Label}" />
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                    <TextBox x:Name="UrlBox" TextChanged="Url_TextChanged" AutomationProperties.Name="下载地址" />
+                    <Button Grid.Column="1" Content="打开种子" Click="Torrent_Click" Margin="7,0,0,0" />
+                </Grid>
+                <TextBlock x:Name="FileNameText" Text="输入下载地址后自动识别文件名称" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,6,0,14" TextTrimming="CharacterEllipsis" />
+                <Grid Margin="0,0,0,16"><Grid.ColumnDefinitions><ColumnDefinition /></Grid.ColumnDefinitions>
+                    <StackPanel><TextBlock Text="使用的网络（任务独立保存）" Style="{StaticResource Label}" />
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <ComboBox x:Name="AdapterBox" DisplayMemberPath="DisplayName" AutomationProperties.Name="指定网卡" ToolTip="{Binding SelectedItem.DisplayName, RelativeSource={RelativeSource Self}}" />
+                            <Button Grid.Column="1" Content="刷新" Click="Refresh_Click" Margin="6,0,0,0" />
+                        </Grid>
+                    </StackPanel>
+                </Grid>
+                <TextBlock Text="保存目录" Style="{StaticResource Label}" />
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                    <TextBox x:Name="PathBox" AutomationProperties.Name="保存目录" /><Button Grid.Column="1" Content="浏览目录" Click="Browse_Click" Margin="7,0,0,0" />
+                </Grid>
+                <TextBlock Text="HTTP 自动调节并发，无需指定连接数；BT 获取元数据后选择文件。网卡失效时不会切换默认网络。" Foreground="{StaticResource Muted}" FontSize="11" Margin="0,9,0,0" TextWrapping="Wrap" />
+            </StackPanel>
+        </Border>
+        <Grid Grid.Row="2" Margin="0,18,0,0"><Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <Button Grid.Column="1" Content="取消" IsCancel="True" MinWidth="70" Margin="0,0,8,0" />
+            <Button Grid.Column="2" Content="加入下载" Click="Add_Click" IsDefault="True" Style="{StaticResource PrimaryButton}" MinWidth="94" />
+        </Grid>
+    </Grid>
+</Window>

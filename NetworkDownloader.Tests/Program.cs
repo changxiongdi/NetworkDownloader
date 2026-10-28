@@ -288,6 +288,15 @@ var cases = new List<(string Name, Func<Task> Run)>
 };
 
 cases.AddRange(SegmentedTests.Create(testRoot));
+cases.AddRange(AdaptiveHttpTests.Create(testRoot));
+cases.AddRange(BtTests.Create(testRoot));
+cases.AddRange(TaskCenterTests.Create(testRoot));
+cases.AddRange(TaskCenterUiTests.Create(testRoot));
+if (args.Length == 2 && args[0] == "--filter")
+{
+    cases = cases.Where(c => c.Name.Contains(args[1], StringComparison.OrdinalIgnoreCase)).ToList();
+    if (cases.Count == 0) { Console.WriteLine("No matching tests"); return 2; }
+}
 var failed = 0;
 foreach (var test in cases)
 {

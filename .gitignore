@@ -3,5 +3,9 @@ obj/
 .vs/
 *.user
 publish/
+publish-bt/
+publish-bt-resume/
+publish-task-center/
+publish-auto-http/
 artifacts/
 *.zip

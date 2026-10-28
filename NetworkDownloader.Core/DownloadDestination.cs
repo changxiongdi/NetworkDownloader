@@ -32,7 +32,7 @@ public static class DownloadDestination
         return name;
     }
 
-    public static string Resolve(Uri url, string directory)
+    public static string Resolve(Uri url, string directory, IReadOnlySet<string>? reservedPaths = null)
     {
         if (string.IsNullOrWhiteSpace(directory)) throw new ArgumentException("请选择保存目录。", nameof(directory));
         directory = Path.GetFullPath(directory);
@@ -44,6 +44,7 @@ public static class DownloadDestination
         {
             var filename = index == 0 ? name : $"{stem} ({index}){extension}";
             var candidate = Path.Combine(directory, filename);
+            if (reservedPaths?.Contains(candidate) == true) continue;
             if (File.Exists(candidate) || Directory.Exists(candidate)) continue;
             var partial = candidate + ".part";
             var metadata = partial + ".json";

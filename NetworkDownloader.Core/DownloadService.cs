@@ -5,12 +5,13 @@ using System.Text.Json;
 
 namespace NetworkDownloader.Core;
 
-public sealed record DownloadProgress(long Downloaded, long? Total, double BytesPerSecond, string Message);
+public sealed record DownloadProgress(long Downloaded, long? Total, double BytesPerSecond, string Message, bool IsChecking = false,
+    int? ActiveHttpRequests = null);
 
 public sealed record DownloadMetadata(string Url, string? ETag, DateTimeOffset? LastModified, long? Total,
     SegmentLayout? Segments = null);
 
-public sealed class DownloadService(HttpClient client)
+public sealed class DownloadService(HttpClient client, AdaptiveHttpSession? session = null)
 {
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(30);
 
@@ -20,6 +21,7 @@ public sealed class DownloadService(HttpClient client)
         if (url.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(url.UserInfo))
             throw new ArgumentException("请输入 HTTP/HTTPS 地址；不支持 URL 内嵌账号密码。", nameof(url));
         if (connectionCount is < 1 or > 16) throw new ArgumentOutOfRangeException(nameof(connectionCount), "下载连接数必须在 1–16 之间。");
+        if (session is not null) progress = new AdaptiveProgress(progress, session);
         destination = Path.GetFullPath(destination);
         if (File.Exists(destination)) throw new IOException("目标文件已存在，请选择新的文件名。");
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
@@ -27,9 +29,11 @@ public sealed class DownloadService(HttpClient client)
             FileAccess.ReadWrite, FileShare.None, 1, FileOptions.DeleteOnClose);
         if (File.Exists(destination)) throw new IOException("目标文件已存在，请选择新的文件名。");
         var saved = await ReadMetadataAsync(destination + ".part.json", cancellationToken);
-        if ((connectionCount > 1 || saved?.Segments is not null) &&
-            await new SegmentedDownloader(client).TryDownloadAsync(url, destination, saved,
-                connectionCount, progress, cancellationToken)) return;
+        if ((session is not null || connectionCount > 1 || saved?.Segments is not null) &&
+            await new SegmentedDownloader(client, session).TryDownloadAsync(url, destination, saved,
+                session is null ? connectionCount : 16, progress, cancellationToken)) return;
+
+        session?.SetWorkerCapacity(1);
 
         for (var attempt = 0; ; attempt++)
         {
@@ -82,6 +86,7 @@ public sealed class DownloadService(HttpClient client)
         // Restart explicitly; never publish an unverified partial file as complete.
         if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable && canResume)
         {
+            response.Dispose(); // Release the actual-request budget before recursive retry.
             progress?.Report(new(0, null, 0, "服务器拒绝续传，正在重新下载…"));
             await DownloadAttemptAsync(url, destination, progress, cancellationToken, allowResume: false);
             return;
@@ -152,7 +157,9 @@ public sealed class DownloadService(HttpClient client)
                 if (count == 0) break;
                 if (total.HasValue && downloaded + count > total.Value)
                     throw new InvalidDataException("实际数据超过声明的文件大小。");
+                var writeStart = Stopwatch.GetTimestamp();
                 await output.WriteAsync(buffer.AsMemory(0, count), cancellationToken);
+                session?.RecordWrite(count, Stopwatch.GetElapsedTime(writeStart));
                 downloaded += count;
                 if (clock.Elapsed - lastReport >= TimeSpan.FromMilliseconds(150))
                 {
@@ -175,11 +182,23 @@ public sealed class DownloadService(HttpClient client)
 
     private async Task<HttpResponseMessage> SendWithTimeoutAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
+        // The adaptive handler times only the network operation, not fair-budget / Retry-After waiting.
+        if (session is not null) return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(ReadTimeout);
         try { return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token); }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         { throw new HttpRequestException("连接或响应头等待超时。", ex); }
+    }
+
+    private sealed class AdaptiveProgress(IProgress<DownloadProgress>? target, AdaptiveHttpSession session) : IProgress<DownloadProgress>
+    {
+        public void Report(DownloadProgress value) => target?.Report(value with
+        {
+            BytesPerSecond = value.BytesPerSecond > 0 ? session.BytesPerSecond : 0,
+            ActiveHttpRequests = session.ActiveRequests,
+            Message = value.Message + " · " + session.Status
+        });
     }
 
     private static long GetPartialLength(string destination) =>

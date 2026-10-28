@@ -2,8 +2,17 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../NetworkDownloader.Core/NetworkDownloader.Core.csproj" />
+    <ProjectReference Include="../NetworkDownloader.BtWorker/NetworkDownloader.BtWorker.csproj" />
+    <ProjectReference Include="../NetworkDownloader.App/NetworkDownloader.App.csproj" />
   </ItemGroup>
+  <Target Name="CopyBtWorkerForTests" AfterTargets="Build">
+    <MSBuild Projects="../NetworkDownloader.BtWorker/NetworkDownloader.BtWorker.csproj" Targets="GetWorkerPayload" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" ItemName="_BtWorkerForTests" />
+    </MSBuild>
+    <Copy SourceFiles="@(_BtWorkerForTests)" DestinationFolder="$(OutDir)bt-worker" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

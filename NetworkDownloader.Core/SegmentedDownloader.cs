@@ -8,7 +8,7 @@ namespace NetworkDownloader.Core;
 public sealed record SegmentRange(long Start, long End);
 public sealed record SegmentLayout(int Version, SegmentRange[] Ranges);
 
-internal sealed class SegmentedDownloader(HttpClient client)
+internal sealed class SegmentedDownloader(HttpClient client, AdaptiveHttpSession? session = null)
 {
     private const long MinimumSegmentSize = 256 * 1024;
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(30);
@@ -75,26 +75,14 @@ internal sealed class SegmentedDownloader(HttpClient client)
         await DownloadService.SaveMetadataAsync(destination + ".part.json", metadata, cancellationToken).ConfigureAwait(false);
 
         var limit = Math.Min(connectionCount, layout.Ranges.Length);
+        session?.SetWorkerCapacity(limit);
         var tracker = new AggregateProgress(lengths, metadata.Total!.Value, limit, progress);
         tracker.Report(force: true);
         using var workersCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         Exception? firstError = null;
         try
         {
-            await Parallel.ForEachAsync(Enumerable.Range(0, layout.Ranges.Length), new ParallelOptions
-            {
-                MaxDegreeOfParallelism = limit,
-                CancellationToken = workersCancellation.Token
-            }, async (index, token) =>
-            {
-                try { await DownloadPartAsync(url, destination, index, metadata, tracker, token).ConfigureAwait(false); }
-                catch (Exception ex)
-                {
-                    Interlocked.CompareExchange(ref firstError, ex, null);
-                    await workersCancellation.CancelAsync().ConfigureAwait(false);
-                    throw;
-                }
-            }).ConfigureAwait(false);
+            await RunWorkersAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -106,6 +94,62 @@ internal sealed class SegmentedDownloader(HttpClient client)
             }
             ExceptionDispatchInfo.Capture(firstError ?? ex).Throw();
             throw;
+        }
+
+        async Task RunWorkersAsync()
+        {
+            var running = new Dictionary<int, (CancellationTokenSource Cancellation, Task Work)>();
+            var finished = new HashSet<int>(Enumerable.Range(0, lengths.Length)
+                .Where(i => lengths[i] == Length(layout.Ranges[i])));
+            try
+            {
+                while (finished.Count < lengths.Length)
+                {
+                    workersCancellation.Token.ThrowIfCancellationRequested();
+                    session?.Tick();
+                    foreach (var pair in running.Where(p => p.Value.Work.IsCompleted).ToArray())
+                    {
+                        try
+                        {
+                            await pair.Value.Work.ConfigureAwait(false);
+                            finished.Add(pair.Key);
+                        }
+                        catch (OperationCanceledException) when (pair.Value.Cancellation.IsCancellationRequested && !workersCancellation.IsCancellationRequested)
+                        { /* Retired worker: its flushed file length remains the resume offset. */ }
+                        running.Remove(pair.Key);
+                        pair.Value.Cancellation.Dispose();
+                    }
+                    var desired = Math.Min(limit, session?.DesiredWorkers ?? limit);
+                    foreach (var pair in running.Where(p => !p.Value.Cancellation.IsCancellationRequested).Skip(desired).ToArray())
+                        pair.Value.Cancellation.Cancel();
+                    for (var index = 0; index < lengths.Length && running.Count < desired; index++)
+                    {
+                        if (finished.Contains(index) || running.ContainsKey(index)) continue;
+                        var workerToken = CancellationTokenSource.CreateLinkedTokenSource(workersCancellation.Token);
+                        running.Add(index, (workerToken, DownloadPartAsync(url, destination, index, metadata, tracker, workerToken.Token)));
+                    }
+                    tracker.Report();
+                    if (running.Count > 0)
+                        await Task.WhenAny(Task.WhenAny(running.Values.Select(v => v.Work)),
+                            Task.Delay(200, workersCancellation.Token)).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                firstError = ex;
+                await workersCancellation.CancelAsync().ConfigureAwait(false);
+                throw;
+            }
+            finally
+            {
+                // No fallback / merge / return until every file writer has exited.
+                await workersCancellation.CancelAsync().ConfigureAwait(false);
+                foreach (var worker in running.Values)
+                {
+                    try { await worker.Work.ConfigureAwait(false); } catch (Exception) { }
+                    worker.Cancellation.Dispose();
+                }
+            }
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -210,7 +254,9 @@ internal sealed class SegmentedDownloader(HttpClient client)
                         tracker.Set(index, offset);
                         throw new InvalidDataException("分片数据超过预期长度。");
                     }
+                    var writeStart = Stopwatch.GetTimestamp();
                     await output.WriteAsync(buffer.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
+                    session?.RecordWrite(count, Stopwatch.GetElapsedTime(writeStart));
                     written += count;
                     tracker.Set(index, written);
                 }
@@ -220,6 +266,7 @@ internal sealed class SegmentedDownloader(HttpClient client)
             }
             catch (Exception ex) when (attempt < 2 && !cancellationToken.IsCancellationRequested && IsTransient(ex))
             {
+                session?.BackOff("分片连接中断 / 超时，降低并发");
                 tracker.Report(force: true, message: $"分片 {index + 1} 中断，正在重试（{attempt + 1}/2）…");
                 await Task.Delay(TimeSpan.FromSeconds(2 * (attempt + 1)), cancellationToken).ConfigureAwait(false);
             }
@@ -246,6 +293,7 @@ internal sealed class SegmentedDownloader(HttpClient client)
 
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
+        if (session is not null) return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(ReadTimeout);
         try { return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false); }
@@ -308,7 +356,8 @@ internal sealed class SegmentedDownloader(HttpClient client)
     {
         private readonly object gate = new();
         private readonly Stopwatch clock = Stopwatch.StartNew();
-        private readonly long initial = lengths.Sum();
+        private long previousBytes = lengths.Sum();
+        private double recentSpeed;
         private TimeSpan lastReport;
 
         public void Set(int index, long length)
@@ -324,7 +373,14 @@ internal sealed class SegmentedDownloader(HttpClient client)
                 if (!force && clock.Elapsed - lastReport < TimeSpan.FromMilliseconds(150)) return;
                 long downloaded = 0;
                 for (var i = 0; i < lengths.Length; i++) downloaded += Interlocked.Read(ref lengths[i]);
-                progress?.Report(new(downloaded, total, Math.Max(0, downloaded - initial) / Math.Max(.001, clock.Elapsed.TotalSeconds),
+                var delta = (clock.Elapsed - lastReport).TotalSeconds;
+                if (delta >= .15)
+                {
+                    var rate = Math.Max(0, downloaded - previousBytes) / delta;
+                    recentSpeed = recentSpeed == 0 ? rate : recentSpeed * .4 + rate * .6;
+                    previousBytes = downloaded;
+                }
+                progress?.Report(new(downloaded, total, recentSpeed,
                     message ?? $"多线程下载（最多 {limit} 个连接）"));
                 lastReport = clock.Elapsed;
             }

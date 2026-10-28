@@ -52,12 +52,12 @@ public static class BoundHttpClientFactory
     private const SocketOptionName IpUnicastInterface = (SocketOptionName)31;
 
     [SupportedOSPlatform("windows")]
-    public static HttpClient Create(NetworkAdapter adapter)
+    public static HttpClient Create(NetworkAdapter adapter, AdaptiveHttpSession? session = null)
     {
         var handler = new SocketsHttpHandler
         {
             UseProxy = false,
-            AllowAutoRedirect = true,
+            AllowAutoRedirect = session is null,
             MaxAutomaticRedirections = 10,
             AutomaticDecompression = DecompressionMethods.None,
             ConnectTimeout = TimeSpan.FromSeconds(20),
@@ -100,7 +100,7 @@ public static class BoundHttpClientFactory
                 throw new HttpRequestException("所选网卡无法连接目标服务器（需要 IPv4 地址）。", lastError);
             }
         };
-        return new HttpClient(handler)
+        return new HttpClient(session?.CreateHandler(handler) ?? handler)
         {
             Timeout = Timeout.InfiniteTimeSpan,
             DefaultRequestVersion = HttpVersion.Version20,

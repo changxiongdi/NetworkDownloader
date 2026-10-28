@@ -1,0 +1,7 @@
+diff --git a/scripts/ports.cmake b/scripts/ports.cmake
+--- a/scripts/ports.cmake
++++ b/scripts/ports.cmake
+@@ -1,2 +1,3 @@
+ cmake_minimum_required(VERSION 3.21)
++set(ENV{VCPKG_COMMAND} "${CMAKE_CURRENT_LIST_DIR}/../vcpkg.exe")
+ if(POLICY CMP0174)

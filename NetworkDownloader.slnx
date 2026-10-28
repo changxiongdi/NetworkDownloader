@@ -2,4 +2,5 @@
   <Project Path="NetworkDownloader.Core/NetworkDownloader.Core.csproj" />
   <Project Path="NetworkDownloader.App/NetworkDownloader.App.csproj" />
   <Project Path="NetworkDownloader.Tests/NetworkDownloader.Tests.csproj" />
+  <Project Path="NetworkDownloader.BtWorker/NetworkDownloader.BtWorker.csproj" />
 </Solution>

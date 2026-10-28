@@ -8,5 +8,20 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../NetworkDownloader.Core/NetworkDownloader.Core.csproj" />
+    <ProjectReference Include="../NetworkDownloader.BtWorker/NetworkDownloader.BtWorker.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
+  <Target Name="CopyBtWorkerPayload" AfterTargets="Build">
+    <MSBuild Projects="../NetworkDownloader.BtWorker/NetworkDownloader.BtWorker.csproj" Targets="GetWorkerPayload" Properties="Configuration=$(Configuration)">
+      <Output TaskParameter="TargetOutputs" ItemName="_BtWorkerPayload" />
+    </MSBuild>
+    <Copy SourceFiles="@(_BtWorkerPayload)" DestinationFolder="$(OutDir)bt-worker" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="IncludeBtWorkerInPublish" BeforeTargets="ComputeFilesToPublish" DependsOnTargets="CopyBtWorkerPayload">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="@(_BtWorkerPayload)">
+        <RelativePath>bt-worker/%(Filename)%(Extension)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 </Project>
