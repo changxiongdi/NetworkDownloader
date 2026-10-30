@@ -2,8 +2,8 @@ param(
     [switch]$SkipDependencies,
     [switch]$DependenciesOnly,
     [string]$PerlPath,
-    [string]$Output = 'publish-auto-http',
-    [string]$Archive = 'NetworkDownloader-AutoHttp-win-x64.zip'
+    [string]$Output = 'publish-timing',
+    [string]$Archive = 'NetworkDownloader-Timing-win-x64.zip'
 )
 $ErrorActionPreference = 'Stop'
 $sourceRoot = Split-Path -Parent $PSScriptRoot

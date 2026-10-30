@@ -64,7 +64,7 @@ public sealed class DownloadTaskViewModel(DownloadTaskRecord record) : Observabl
     {
         DownloadTaskState.Queued => "排队中", DownloadTaskState.Connecting => "连接中",
         DownloadTaskState.ResolvingMetadata => "解析元数据", DownloadTaskState.AwaitingFileSelection => "等待选择",
-        DownloadTaskState.Checking => "校验中", DownloadTaskState.Downloading => "下载中",
+        DownloadTaskState.Checking => "校验中", DownloadTaskState.Downloading => Record.IsFinalizing ? "合并中" : "下载中",
         DownloadTaskState.Pausing => "正在暂停", DownloadTaskState.Paused => "已暂停",
         DownloadTaskState.Completed => Record.FilesMissing ? "文件缺失" : "已完成",
         DownloadTaskState.NetworkUnavailable => "网络不可用", DownloadTaskState.Interrupted => "待恢复", _ => "下载失败"
@@ -81,6 +81,39 @@ public sealed class DownloadTaskViewModel(DownloadTaskRecord record) : Observabl
     public bool Indeterminate => Record.State is DownloadTaskState.Checking or DownloadTaskState.ResolvingMetadata or DownloadTaskState.Connecting;
     public string SizeText => $"{FormatSize(Record.Downloaded)} / {(Record.Total.HasValue ? FormatSize(Record.Total.Value) : "未知大小")}";
     public string Rate => Record.State == DownloadTaskState.Downloading ? FormatSize((long)Record.BytesPerSecond) + "/s" : "—";
+    public string ElapsedText => Record.ElapsedMilliseconds is { } ms
+        ? (Record.ElapsedIsPartial ? "升级后 " : "已用 ") + FormatDuration(ms / 1000d, approximate: false)
+        : "历史用时未知";
+    public string RemainingText => Record.State switch
+    {
+        DownloadTaskState.Completed => "已完成",
+        DownloadTaskState.Paused => "已暂停",
+        DownloadTaskState.Pausing => "正在暂停",
+        DownloadTaskState.Queued => "等待调度",
+        DownloadTaskState.AwaitingFileSelection => "等待选文件",
+        DownloadTaskState.Checking => "正在校验",
+        DownloadTaskState.ResolvingMetadata => "解析元数据",
+        DownloadTaskState.Connecting => "正在估算",
+        DownloadTaskState.Downloading => Record.EstimateState switch
+        {
+            DownloadEstimateState.Finalizing => Record.IsFinalizing ? "正在合并" : "正在收尾",
+            DownloadEstimateState.WaitingForData => "等待数据",
+            DownloadEstimateState.UnknownSize => "无法估算",
+            DownloadEstimateState.Available when Record.EstimatedRemainingSeconds is { } seconds => "剩余 " + (seconds < 60 ? "不足1分钟" : "约" + FormatDuration(seconds, approximate: true)),
+            _ => "正在估算"
+        },
+        DownloadTaskState.NetworkUnavailable => "网络不可用",
+        DownloadTaskState.Interrupted => "等待恢复",
+        _ => "等待重试"
+    };
+    public string TimingToolTip => $"累计执行用时：{(Record.ElapsedMilliseconds is { } ms ? FormatExactDuration(ms) : "历史记录未统计")}"
+        + (Record.ElapsedIsPartial ? "（仅升级后累计，升级前未知）" : "")
+        + "\n不含排队、暂停、等待选文件及程序关闭时间。\n" + RemainingText
+        + "；按最近15秒有效字节估算，停止接收5秒后不再给出倒计时。\n预计剩余仅指数据传输，不包含后续校验 / 合并。";
+    public string EstimatedCompletionText => Record.State == DownloadTaskState.Downloading && Record.EstimatedCompletionAt is { } value
+        ? value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") + "（预计）" : "—";
+    public string ElapsedDetail => Record.ElapsedMilliseconds is { } ms
+        ? FormatExactDuration(ms) + (Record.ElapsedIsPartial ? "（升级后累计）" : "") : "历史用时未知";
     public string Message => Record.FilesMissing ? "文件已移动、删除或大小改变；不会自动重新下载。" : Record.Message;
     public string OutputPath => Record.OutputPath ?? Record.SaveDirectory;
     public string CreatedText => Record.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
@@ -93,6 +126,30 @@ public sealed class DownloadTaskViewModel(DownloadTaskRecord record) : Observabl
     public bool CanRebind => Record.CanResume;
     public bool CanPrimary => CanPause || Record.CanResume || Record.State == DownloadTaskState.Completed;
     public void Update(DownloadTaskRecord value) { Record = value; Notify(null); }
+    public static string FormatDuration(double seconds, bool approximate)
+    {
+        if (!double.IsFinite(seconds) || seconds < 0) return "未知";
+        // Round remaining time upwards; never advertise 0 seconds for unfinished data.
+        if (approximate)
+        {
+            if (seconds < 60) return "不足1分钟";
+            if (seconds < 3600) return $"{Math.Ceiling(seconds / 60):0}分钟";
+            var minutes = Math.Ceiling(seconds / 60);
+            if (minutes < 1440) return $"{Math.Floor(minutes / 60):0}小时{minutes % 60:0}分";
+            var hours = Math.Ceiling(seconds / 3600);
+            return $"{Math.Floor(hours / 24):0}天{hours % 24:0}小时";
+        }
+        var whole = (long)Math.Min(Math.Floor(seconds), TimeSpan.MaxValue.TotalSeconds);
+        if (whole < 60) return $"{whole}秒";
+        if (whole < 3600) return $"{whole / 60}分{whole % 60:00}秒";
+        if (whole < 86400) return $"{whole / 3600}小时{whole / 60 % 60:00}分";
+        return $"{whole / 86400}天{whole / 3600 % 24:00}小时";
+    }
+    private static string FormatExactDuration(long ms)
+    {
+        var time = TimeSpan.FromMilliseconds(ms);
+        return time.Days > 0 ? $"{time.Days}天 {time:hh\\:mm\\:ss}" : $"{(long)time.TotalHours:00}:{time:mm\\:ss}";
+    }
     public static string FormatSize(long bytes)
     {
         string[] units = ["B", "KB", "MB", "GB", "TB"];

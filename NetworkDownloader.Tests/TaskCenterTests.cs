@@ -16,6 +16,106 @@ internal static class TaskCenterTests
 
     public static IEnumerable<(string Name, Func<Task> Run)> Create(string root)
     {
+        yield return ("Task Timing persists without callbacks and resumes cumulative elapsed across restart", async () =>
+        {
+            var directory = NewDirectory(root); var clock = new ManualTimeProvider(); Guid id;
+            using (var store = Store(directory))
+            {
+                var runner = new ControlledRunner { DelayStop = true };
+                await using var center = new DownloadTaskCoordinator(store, runner, Path.Combine(directory, "cache"), () => [NicA], clock: clock);
+                await center.InitializeAsync(); var task = await center.AddAsync(Http("timed.bin"), directory, NicA); id = task.Id;
+                await Until(() => runner.Started.ContainsKey(id));
+                clock.Advance(4);
+                await UntilAsync(async () => (await center.GetTasksAsync()).Single().ElapsedMilliseconds == 4000);
+                Check(store.Load().Single().ElapsedMilliseconds == 4000, "No-callback execution time not checkpointed");
+                await center.PauseAsync([id]); clock.Advance(2); runner.AllowStop.TrySetResult();
+                await UntilAsync(async () => (await center.GetTasksAsync()).Single().State == DownloadTaskState.Paused);
+                Check(store.Load().Single().ElapsedMilliseconds == 6000, "Flush elapsed not included");
+            }
+            clock.Advance(86400);
+            using (var store = Store(directory))
+            {
+                var runner = new ControlledRunner();
+                await using var center = new DownloadTaskCoordinator(store, runner, Path.Combine(directory, "cache"), () => [NicA], clock: clock);
+                await center.InitializeAsync();
+                Check((await center.GetTasksAsync()).Single().ElapsedMilliseconds == 6000 && runner.Starts == 0, "Restart counted downtime / auto-started");
+                await center.ResumeAsync([id]); await Until(() => runner.Started.ContainsKey(id));
+                clock.Advance(3); runner.Complete(id);
+                await UntilAsync(async () => (await center.GetTasksAsync()).Single().State == DownloadTaskState.Completed);
+                var saved = store.Load().Single();
+                Check(saved.ElapsedMilliseconds == 9000 && !saved.ElapsedIsPartial, "Resume lost / duplicated cumulative elapsed");
+                clock.Advance(100);
+                Check((await center.GetTasksAsync()).Single().ElapsedMilliseconds == 9000, "Completed task clock still running");
+            }
+        });
+
+        yield return ("Task Timing excludes BT file picker wait and counts resumed checking", async () =>
+        {
+            var directory = NewDirectory(root); using var store = Store(directory); var clock = new ManualTimeProvider();
+            var runner = new MetadataRunner();
+            var opened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var selected = new TaskCompletionSource<int[]?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var center = new DownloadTaskCoordinator(store, runner, Path.Combine(directory, "cache"), () => [NicA], clock: clock);
+            center.ChooseFilesAsync = (_, _, token) => { opened.TrySetResult(); return selected.Task.WaitAsync(token); };
+            await center.InitializeAsync(); var task = await center.AddAsync(Magnet('a'), directory, NicA);
+            await opened.Task.WaitAsync(TimeSpan.FromSeconds(5)); clock.Advance(100);
+            await Task.Delay(350);
+            Check((await center.GetTasksAsync()).Single().ElapsedMilliseconds == 0, "File picker wait counted");
+            selected.TrySetResult([1]);
+            await UntilAsync(async () => (await center.GetTasksAsync()).Single().State == DownloadTaskState.Checking);
+            clock.Advance(5); await center.PauseAsync([task.Id]);
+            await UntilAsync(async () => (await center.GetTasksAsync()).Single().State == DownloadTaskState.Paused);
+            Check(store.Load().Single().ElapsedMilliseconds == 5000, "Post-picker checking time lost");
+        });
+
+        yield return ("Task Timing failed retry excludes stopped time and legacy duration stays explicitly partial", async () =>
+        {
+            var directory = NewDirectory(root); using var store = Store(directory); var clock = new ManualTimeProvider();
+            var legacy = store.Save(Record(directory) with { State = DownloadTaskState.Paused, ElapsedMilliseconds = null }, true);
+            var runner = new ControlledRunner();
+            await using var center = new DownloadTaskCoordinator(store, runner, Path.Combine(directory, "cache"), () => [NicA], clock: clock);
+            await center.InitializeAsync();
+            Check((await center.GetTasksAsync()).Single().ElapsedMilliseconds is null, "Legacy duration fabricated at load");
+            await center.ResumeAsync([legacy.Id]); await Until(() => runner.Starts == 1);
+            clock.Advance(4); runner.Started[legacy.Id].Result.TrySetException(new IOException("test failure"));
+            await UntilAsync(async () => (await center.GetTasksAsync()).Single().State == DownloadTaskState.Failed);
+            clock.Advance(500); await center.ResumeAsync([legacy.Id]); await Until(() => runner.Starts == 2);
+            clock.Advance(2); runner.Complete(legacy.Id);
+            await UntilAsync(async () => (await center.GetTasksAsync()).Single().State == DownloadTaskState.Completed);
+            var saved = store.Load().Single();
+            Check(saved.ElapsedMilliseconds == 6000 && saved.ElapsedIsPartial, "Failure wait counted / upgrade label lost");
+        });
+
+        yield return ("Task Timing catalog rejects negative or overflowing duration without replacing data", () =>
+        {
+            var directory = NewDirectory(root); using var store = Store(directory);
+            var first = store.Save(Record(directory) with { ElapsedMilliseconds = -1 }, true);
+            ExpectFailure(() => store.Load());
+            first = store.Save(first with { ElapsedMilliseconds = long.MaxValue }, true);
+            ExpectFailure(() => store.Load());
+            store.Save(first with { ElapsedMilliseconds = null }, true);
+            Check(store.Load().Single().ElapsedMilliseconds is null, "Legacy null duration rejected");
+            return Task.CompletedTask;
+        });
+
+        yield return ("Task Timing unknown HTTP response length clears previously known size and estimate", async () =>
+        {
+            var directory = NewDirectory(root); using var store = Store(directory); var clock = new ManualTimeProvider();
+            var runner = new ControlledRunner();
+            await using var center = new DownloadTaskCoordinator(store, runner, Path.Combine(directory, "cache"), () => [NicA], clock: clock);
+            await center.InitializeAsync(); var task = await center.AddAsync(Http("unknown.bin"), directory, NicA);
+            await Until(() => runner.Started.ContainsKey(task.Id));
+            var progress = runner.Started[task.Id].Progress;
+            progress.Report(new(0, 10000, 100, "Downloading"));
+            await UntilAsync(async () => (await center.GetTasksAsync()).Single().Total == 10000);
+            clock.Advance(4); progress.Report(new(400, 10000, 100, "Downloading"));
+            await UntilAsync(async () => (await center.GetTasksAsync()).Single().EstimateState == DownloadEstimateState.Available);
+            progress.Report(new(500, null, 100, "Unknown response length"));
+            await UntilAsync(async () => (await center.GetTasksAsync()).Single().EstimateState == DownloadEstimateState.UnknownSize);
+            var updated = (await center.GetTasksAsync()).Single();
+            Check(updated.Total is null && updated.EstimatedRemainingSeconds is null && updated.EstimatedCompletionAt is null, "Stale known length still drives ETA");
+        });
+
         yield return ("Task real BT worker caches torrent, verifies local pieces and persists completion", async () =>
         {
             var directory = NewDirectory(root); var bytes = new byte[128 * 1024 + 17]; new Random(819).NextBytes(bytes);

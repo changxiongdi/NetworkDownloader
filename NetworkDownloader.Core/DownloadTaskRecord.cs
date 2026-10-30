@@ -32,6 +32,17 @@ public sealed record DownloadTaskRecord
     public long Downloaded { get; init; }
     public long? Total { get; init; }
     public double BytesPerSecond { get; init; }
+    // Null means the pre-upgrade duration is unknown, never inferred from CreatedAt.
+    public long? ElapsedMilliseconds { get; init; }
+    public bool ElapsedIsPartial { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public double? EstimatedRemainingSeconds { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public DateTimeOffset? EstimatedCompletionAt { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public DownloadEstimateState EstimateState { get; init; } = DownloadEstimateState.Inactive;
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsFinalizing { get; init; }
     public string Message { get; init; } = "等待调度";
     public bool FilesMissing { get; init; }
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;

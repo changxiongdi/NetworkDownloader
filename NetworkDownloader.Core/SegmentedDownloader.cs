@@ -153,7 +153,7 @@ internal sealed class SegmentedDownloader(HttpClient client, AdaptiveHttpSession
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        progress?.Report(new(total, total, 0, "分片完成，正在合并文件…"));
+        progress?.Report(new(total, total, 0, "分片完成，正在合并文件…", IsFinalizing: true));
         await using (var output = new FileStream(destination + ".part", FileMode.Create, FileAccess.Write,
             FileShare.Read, 128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
         {

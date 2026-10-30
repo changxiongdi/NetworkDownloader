@@ -10,6 +10,7 @@ public sealed class DownloadTaskCoordinator : IAsyncDisposable
     private readonly Func<IReadOnlyList<NetworkAdapter>> adapters;
     private readonly string cacheDirectory;
     private readonly DownloadLimits limits;
+    private readonly TimeProvider clock;
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly Dictionary<Guid, DownloadTaskRecord> records = [];
     private readonly Dictionary<Guid, Run> active = [];
@@ -25,13 +26,14 @@ public sealed class DownloadTaskCoordinator : IAsyncDisposable
     public Func<DownloadTaskRecord, BtMetadata, CancellationToken, Task<int[]?>>? ChooseFilesAsync { get; set; }
 
     public DownloadTaskCoordinator(DownloadTaskStore store, IDownloadTaskRunner runner, string cacheDirectory,
-        Func<IReadOnlyList<NetworkAdapter>>? adapters = null, DownloadLimits? limits = null)
+        Func<IReadOnlyList<NetworkAdapter>>? adapters = null, DownloadLimits? limits = null, TimeProvider? clock = null)
     {
         this.store = store;
         this.runner = runner;
         this.cacheDirectory = Path.GetFullPath(cacheDirectory);
         this.adapters = adapters ?? NetworkAdapters.GetAvailable;
         this.limits = limits ?? new();
+        this.clock = clock ?? TimeProvider.System;
         this.limits.Validate();
         if (OperatingSystem.IsWindows() && runner is DownloadTaskRunner httpRunner) httpRunner.ConfigureHttpBudget(this.limits.MaxHttpConnections);
     }
@@ -116,7 +118,7 @@ public sealed class DownloadTaskCoordinator : IAsyncDisposable
             {
                 Id = id, Input = input, Name = originalName, SourceIdentity = identity, InfoHash = input.InfoHash,
                 SaveDirectory = directory, OutputPath = output, AdapterId = available.Id, AdapterName = available.Name,
-                Address = available.Address.ToString(), Connections = 1
+                Address = available.Address.ToString(), Connections = 1, ElapsedMilliseconds = 0
             };
             await SaveLockedAsync(record, true);
             await PumpLockedAsync();
@@ -211,9 +213,13 @@ public sealed class DownloadTaskCoordinator : IAsyncDisposable
                 continue;
             }
             var started = queued with { State = queued.IsBt ? DownloadTaskState.ResolvingMetadata : DownloadTaskState.Connecting,
-                Message = queued.IsBt ? "正在读取元数据 / 恢复记录" : "正在连接 / 读取断点", BytesPerSecond = 0 };
+                Message = queued.IsBt ? "正在读取元数据 / 恢复记录" : "正在连接 / 读取断点", BytesPerSecond = 0,
+                ElapsedMilliseconds = queued.ElapsedMilliseconds ?? 0,
+                ElapsedIsPartial = queued.ElapsedIsPartial || !queued.ElapsedMilliseconds.HasValue,
+                EstimatedRemainingSeconds = null, EstimatedCompletionAt = null,
+                EstimateState = DownloadEstimateState.Estimating, IsFinalizing = false };
             await SaveLockedAsync(started, true);
-            var run = new Run();
+            var run = new Run(started, clock);
             active.Add(queued.Id, run);
             _ = Task.Run(() => ExecuteAsync(queued.Id, run, adapter));
         }
@@ -339,10 +345,14 @@ public sealed class DownloadTaskCoordinator : IAsyncDisposable
                             continue;
                         }
                         var progress = Interlocked.Exchange(ref run.Latest, null);
-                        if (progress is null || task.State is DownloadTaskState.Pausing or DownloadTaskState.AwaitingFileSelection) continue;
-                        var update = ApplyProgress(task, progress);
-                        if (update.State != task.State || DateTimeOffset.UtcNow - run.LastSaved >= TimeSpan.FromSeconds(3))
-                        { await SaveLockedAsync(update, update.State != task.State); run.LastSaved = DateTimeOffset.UtcNow; }
+                        var now = clock.GetTimestamp();
+                        if (progress is null && clock.GetElapsedTime(run.LastNotified, now) < TimeSpan.FromSeconds(1)) continue;
+                        var update = progress is not null && task.State is not (DownloadTaskState.Pausing or DownloadTaskState.AwaitingFileSelection)
+                            ? ApplyProgress(task, progress) : task;
+                        update = run.Timing.Update(update);
+                        run.LastNotified = now;
+                        if (update.State != task.State || clock.GetElapsedTime(run.LastSaved, now) >= TimeSpan.FromSeconds(3))
+                            await SaveLockedAsync(update, update.State != task.State);
                         else { records[id] = update; TaskChanged?.Invoke(update); }
                     }
                 }
@@ -359,15 +369,20 @@ public sealed class DownloadTaskCoordinator : IAsyncDisposable
             : task.IsBt && !progress.Total.HasValue ? DownloadTaskState.ResolvingMetadata : DownloadTaskState.Downloading;
         // Do not disguise a local BT hash check as a fresh 0% download.
         var downloaded = progress.IsChecking ? Math.Max(task.Downloaded, progress.Downloaded) : progress.Downloaded;
-        return task with { State = state, Downloaded = downloaded, Total = progress.Total ?? task.Total,
+        return task with { State = state, Downloaded = downloaded, Total = task.IsBt ? progress.Total ?? task.Total : progress.Total,
             BytesPerSecond = Math.Max(0, progress.BytesPerSecond), Message = progress.Message,
-            ActiveHttpRequests = progress.ActiveHttpRequests ?? 0 };
+            ActiveHttpRequests = progress.ActiveHttpRequests ?? 0, IsFinalizing = progress.IsFinalizing };
     }
 
     private async Task SaveLockedAsync(DownloadTaskRecord task, bool transition)
     {
         try
         {
+            if (active.TryGetValue(task.Id, out var run))
+            {
+                task = run.Timing.Update(task);
+                run.LastSaved = clock.GetTimestamp();
+            }
             var saved = await Task.Run(() => store.Save(task, transition));
             records[saved.Id] = saved;
             TaskChanged?.Invoke(saved);
@@ -437,12 +452,14 @@ public sealed class DownloadTaskCoordinator : IAsyncDisposable
         if (polling is not null) await polling;
     }
     public async ValueTask DisposeAsync() { await ShutdownAsync(); lifetime.Dispose(); gate.Dispose(); }
-    private sealed class Run
+    private sealed class Run(DownloadTaskRecord task, TimeProvider clock)
     {
+        public DownloadTaskTiming Timing { get; } = new(task, clock);
         public CancellationTokenSource Cancellation { get; } = new();
         public TaskCompletionSource Finished { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public DownloadProgress? Latest;
-        public DateTimeOffset LastSaved;
+        public long LastSaved = clock.GetTimestamp();
+        public long LastNotified = clock.GetTimestamp();
         public bool NetworkLost;
     }
     private sealed class ProgressMailbox(Run run) : IProgress<DownloadProgress>

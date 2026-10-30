@@ -6,7 +6,7 @@ using System.Text.Json;
 namespace NetworkDownloader.Core;
 
 public sealed record DownloadProgress(long Downloaded, long? Total, double BytesPerSecond, string Message, bool IsChecking = false,
-    int? ActiveHttpRequests = null);
+    int? ActiveHttpRequests = null, bool IsFinalizing = false);
 
 public sealed record DownloadMetadata(string Url, string? ETag, DateTimeOffset? LastModified, long? Total,
     SegmentLayout? Segments = null);

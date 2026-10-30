@@ -7,5 +7,6 @@ publish-bt/
 publish-bt-resume/
 publish-task-center/
 publish-auto-http/
+publish-timing/
 artifacts/
 *.zip

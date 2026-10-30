@@ -4,7 +4,7 @@ Windows 桌面下载工具，C# / .NET 10 / WPF。支持分类任务列表、SQL
 
 ## 运行
 
-安装 x64 .NET 10 Desktop Runtime 后，打开 `publish-auto-http/NetworkDownloader.exe`。自动并发版使用独立发布目录和 `NetworkDownloader-AutoHttp-win-x64.zip`，不会覆盖旧版任务中心。请完整解压发布包，不要单独移动 EXE；`bt-worker/` 是 BT 必需组件。旧版发布目录保留。
+安装 x64 .NET 10 Desktop Runtime 后，打开 `publish-timing/NetworkDownloader.exe`。计时版使用独立发布目录和 `NetworkDownloader-Timing-win-x64.zip`，不会覆盖旧版任务中心或自动并发版。请完整解压发布包，不要单独移动 EXE；`bt-worker/` 是 BT 必需组件。旧版发布目录保留。
 开发运行：
 
 ```powershell
@@ -31,6 +31,15 @@ dotnet run --project NetworkDownloader.App
 - 旧单任务版本没有历史目录，不能自动还原其下载历史。首次把原地址 / Hash 加入相同保存目录会复用现有 HTTP / BT 断点，无需删除旧文件。
 
 界面采用紧凑布局，输入框、下拉框和按钮统一为 32 个设备无关像素高，文字、图标、圆角及间距同步缩小；长网卡名称可悬停查看完整名称和 IP。
+
+## 预计剩余与累计用时
+
+- 列表采用三行“速度 / 时间”：实时速度、预计剩余、累计执行用时，保持 68 DIP 行高；详情提供精确到秒的累计时间与预计传输完成日期，悬停可查看计时规则。最小窗口仍无需横向滚动。
+- 累计用时计入连接、BT 元数据解析、校验、传输、自动重试等待和最终合并 / 保存断点；不计排队、等待用户选择文件、已暂停 / 失败 / 断网停止后的时间和程序关闭期间。暂停保存完成后冻结，继续或重试后累加，完成后固定。
+- 用 `TimeProvider.System` 的单调时间戳（Stopwatch）计时，不使用“当前时间减创建时间”；系统校时不改变累计时长。任务协调器即使没有引擎进度回调也每秒更新，约每 3 秒保存加密任务记录，状态切换立即保存。异常退出最多损失最近约一个保存周期的计时，不改变已有下载断点。
+- HTTP 与 BT 都按最近 15 秒的任务有效字节差计算平均吞吐，不把已有断点字节或本地校验字节算作新传输。先采样至少 3 秒；恢复、资源大小变化或数据重置后重新估算。连续 5 秒没有有效增长显示“等待数据”，清除旧估计，数据恢复后重新采样。
+- 大小未知显示“无法估算”；暂停显示“已暂停”；校验 / 合并显示对应阶段，不显示 0 秒或伪装成完成。预计剩余向上取整，短于 1 分钟显示“不足1分钟”。预计日期仅指数据传输，**不包含后续校验、合并或其他收尾**，速度和网络条件变化会影响准确性。
+- 旧任务没有历史耗时，显示“历史用时未知”，不能根据创建时间伪造。旧任务再次执行后显示“升级后累计”，永久保留“升级前未知”的提示；新建任务从 0 开始。累计毫秒与历史缺失标志保存进现有加密 JSON，无需重建 SQLite 表；ETA、预计日期和临时合并阶段不持久化。
 
 ## 磁力链接与种子下载
 
@@ -73,7 +82,7 @@ pwsh -File scripts/build.ps1
 pwsh -File scripts/build.ps1 -SkipDependencies
 ```
 
-脚本锁定 vcpkg 基线，编译原生桥接 DLL，构建 C#、执行测试，然后生成 `publish-auto-http/` 和 `NetworkDownloader-AutoHttp-win-x64.zip`。通过 `-Output` / `-Archive` 指定独立发布路径；不会覆盖已有同名压缩包。可通过 `-PerlPath C:\Strawberry\perl\bin\perl.exe` 指定完整的本机 Windows Perl。原生引擎静态链接其依赖，发布包附完整第三方许可证；不需要安装 vcpkg 或 C++ 编译器才能运行。
+脚本锁定 vcpkg 基线，编译原生桥接 DLL，构建 C#、执行测试，然后生成 `publish-timing/` 和 `NetworkDownloader-Timing-win-x64.zip`。通过 `-Output` / `-Archive` 指定独立发布路径；不会覆盖已有同名压缩包。可通过 `-PerlPath C:\Strawberry\perl\bin\perl.exe` 指定完整的本机 Windows Perl。原生引擎静态链接其依赖，发布包附完整第三方许可证；不需要安装 vcpkg 或 C++ 编译器才能运行。
 
 直接 `dotnet build` 不会联网构建 C++。未先构建原生 DLL 时，HTTP 仍可用，BT 会提示缺少引擎，不会伪装成功。测试程序的 BT 集成测试需要原生 DLL，使用本地生成的随机文件和本地种群，不连接用户提供的磁力资源。
 
@@ -120,8 +129,8 @@ pwsh -File scripts/build.ps1 -SkipDependencies
 ```powershell
 dotnet build NetworkDownloader.slnx -c Release
 dotnet run --project NetworkDownloader.Tests -c Release
-dotnet publish NetworkDownloader.App -c Release -r win-x64 --self-contained false -o publish-auto-http
-dotnet publish NetworkDownloader.BtWorker -c Release -r win-x64 --self-contained false -o publish-auto-http/bt-worker
+dotnet publish NetworkDownloader.App -c Release -r win-x64 --self-contained false -o publish-timing
+dotnet publish NetworkDownloader.BtWorker -c Release -r win-x64 --self-contained false -o publish-timing/bt-worker
 ```
 
 测试程序不依赖测试框架或公网，验证目录保存、URL 文件名解析、中文解码、同名编号、临时文件查找、完整下载、续传、取消恢复、资源变化、非法 Range、416、错误响应、目标文件保护，以及真实并发、分片合并、并发数变更、单连接回退、分片中断重试和合并取消恢复。通过真实本地 TCP 服务验证单连接和多连接均绑定指定 Windows 网卡地址，下载结果用 SHA-256 对比测试源数据。
@@ -134,7 +143,9 @@ dotnet publish NetworkDownloader.BtWorker -c Release -r win-x64 --self-contained
 
 自动并发新增 17 项策略 / CPU / 写入压力 / 网卡饱和、实际请求预算与公平性、响应体生命周期、429 / 503 的 Retry-After、长冷却可取消、跨 Origin 重定向、三个真实引擎并行任务、动态扩缩容 SHA-256、取消恢复与旧断点兼容测试。2026-10-28 最终 Release 构建零警告、零错误，完整回归 91/91 通过，NuGet 公告审计未发现已知漏洞依赖。测试服务为进程内可控流与已有真实本地 TCP 服务，不使用公网测速。自适应参数仍需在目标 CDN / 网络上进行长时调优，不能以自动化回归代替公网性能认证。
 
-`NetworkDownloader-AutoHttp-win-x64.zip` 为包含 BT 引擎与 SQLite 原生库的新版框架依赖发布包，完整解压后运行，需 x64 .NET 10 Desktop Runtime。旧的发布包均保留。也可以自行使用 `-r win-x64 --self-contained true` 同时发布 App 和 Worker 及原生组件（首次可能需要联网下载运行时包）。
+计时功能另增加 14 项时间窗口 / 状态排除 / 时钟跳变 / 旧记录 / JSON 兼容 / 无回调持久化 / 跨重启续传 / BT 文件选择 / 失败重试 / HTTP 响应长度变化与非法时长保护测试，并扩充离屏界面测试覆盖时间列显示、最小窗口宽度与 68 DIP 行高。2026-10-29 最终 Release 构建零警告、零错误，完整回归 105/105 通过，万条历史仍只生成 5 个可见行容器。
+
+`NetworkDownloader-Timing-win-x64.zip` 为包含 BT 引擎与 SQLite 原生库的新版框架依赖发布包，完整解压后运行，需 x64 .NET 10 Desktop Runtime。旧的发布包均保留。也可以自行使用 `-r win-x64 --self-contained true` 同时发布 App 和 Worker 及原生组件（首次可能需要联网下载运行时包）。
 
 真实双网卡验收：在两张网卡均有公网时分别下载同一文件，使用资源监视器 / Wireshark 核对本地源 IP、网卡流量；如两张网卡的 NAT 出口不同，也可使用自己信任的公网 IP 回显服务核对出口。下载时断开所选网卡，应失败 / 重试并保留临时文件；暂停后改选另一张网卡应能续传。实际物理双网卡出口需要在目标网络环境中验证。
 

@@ -81,6 +81,7 @@ public sealed class DownloadTaskStore : IDisposable
                     ?? throw new InvalidDataException("任务记录为空，未丢弃原有数据库。");
                 if (record.Id.ToString("N") != reader.GetString(0) || record.Version != reader.GetInt64(1) ||
                     !Enum.IsDefined(record.State) || record.Connections is < 1 or > 16 ||
+                    record.ElapsedMilliseconds < 0 || record.ElapsedMilliseconds > TimeSpan.MaxValue.Ticks / TimeSpan.TicksPerMillisecond ||
                     !Path.IsPathFullyQualified(record.SaveDirectory)) throw new InvalidDataException("任务记录格式无效。");
                 records.Add(record);
             }

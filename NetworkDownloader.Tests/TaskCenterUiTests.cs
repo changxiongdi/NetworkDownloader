@@ -46,6 +46,10 @@ internal static class TaskCenterUiTests
                 Address = i % 2 == 0 ? "192.168.142.40" : "192.168.1.20", State = states[i], Total = 1024L * 1024 * 1024,
                 Downloaded = states[i] == DownloadTaskState.Completed ? 1024L * 1024 * 1024 : (i + 1) * 120L * 1024 * 1024, BytesPerSecond = i < 2 ? 8L * 1024 * 1024 : 0,
                 OutputPath = Path.Combine(testRoot, names[i]), Message = i == 4 ? "指定网卡已断开，未切换默认网络" : "已有断点独立保存",
+                ElapsedMilliseconds = (i + 1) * 180000, ElapsedIsPartial = i == 4,
+                EstimateState = i < 2 ? DownloadEstimateState.Available : DownloadEstimateState.Inactive,
+                EstimatedRemainingSeconds = i < 2 ? 120 : null,
+                EstimatedCompletionAt = i < 2 ? DateTimeOffset.UtcNow.AddMinutes(2) : null,
                 CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-i)
             }));
         }
@@ -55,8 +59,12 @@ internal static class TaskCenterUiTests
         var root = (FrameworkElement)main.Content;
         Render(root, 1104, 720, Path.Combine(output, "task-center.png"));
         Check(Descendants<ListBoxItem>(root).Count() == 5, "Navigation categories were clipped or not realized");
+        Check(Descendants<TextBlock>(root).Any(t => t.Text == "剩余 约2分钟") && Descendants<TextBlock>(root).Any(t => t.Text == "已用 3分00秒"), "Timing labels missing from visible rows");
         ((Expander)main.FindName("DetailsExpander")).IsExpanded = false;
         Render(root, 884, 580, Path.Combine(output, "task-center-compact.png"));
+        var grid = (DataGrid)main.FindName("TaskList");
+        Check(grid.Columns.Sum(c => c.ActualWidth) <= grid.ActualWidth, "Timing column clips actions at minimum width");
+        Check(Descendants<DataGridRow>(root).All(row => Math.Abs(row.ActualHeight - 68) < 1), "Timing changed compact row height");
         ((Expander)main.FindName("DetailsExpander")).IsExpanded = true;
         model.Category = model.Categories.Single(c => c.Key == "paused");
         Check(model.TaskView.Cast<object>().Count() == 1, "Paused filter failed");

@@ -289,6 +289,7 @@ var cases = new List<(string Name, Func<Task> Run)>
 
 cases.AddRange(SegmentedTests.Create(testRoot));
 cases.AddRange(AdaptiveHttpTests.Create(testRoot));
+cases.AddRange(TimingTests.Create(testRoot));
 cases.AddRange(BtTests.Create(testRoot));
 cases.AddRange(TaskCenterTests.Create(testRoot));
 cases.AddRange(TaskCenterUiTests.Create(testRoot));
